@@ -43,6 +43,7 @@ class ListingCreateRequest(BaseModel):
     latitude: float
     longitude: float
     farmer_name: str = "Farmer"
+    asking_price_per_kg: float | None = None
 
 
 class DemandCreateRequest(BaseModel):
@@ -101,10 +102,31 @@ def create_listing(payload: ListingCreateRequest):
         quantity_kg=payload.quantity_kg,
         lat=payload.latitude,
         lon=payload.longitude,
+        asking_price_per_kg=payload.asking_price_per_kg,
     )
     LISTINGS_DB[listing_id] = listing
     FARMER_NAMES[listing_id] = payload.farmer_name
     return {"listing_id": listing_id, "status": "ACTIVE"}
+
+
+@app.post("/listings/bulk")
+def create_listings_bulk(payloads: List[ListingCreateRequest]):
+    """FPO bulk mode: create many listings in one call, return their ids in order."""
+    created = []
+    for payload in payloads:
+        listing_id = str(uuid.uuid4())[:8]
+        LISTINGS_DB[listing_id] = Listing(
+            id=listing_id,
+            commodity=payload.commodity,
+            grade=payload.grade,
+            quantity_kg=payload.quantity_kg,
+            lat=payload.latitude,
+            lon=payload.longitude,
+            asking_price_per_kg=payload.asking_price_per_kg,
+        )
+        FARMER_NAMES[listing_id] = payload.farmer_name
+        created.append({"listing_id": listing_id, "commodity": payload.commodity})
+    return {"created": created}
 
 
 @app.post("/demands")

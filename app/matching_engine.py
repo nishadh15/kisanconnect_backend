@@ -25,6 +25,7 @@ class Listing:
     quantity_kg: float
     lat: float
     lon: float
+    asking_price_per_kg: Optional[float] = None
 
 
 @dataclass
