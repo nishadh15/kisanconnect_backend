@@ -18,6 +18,16 @@ DISTRICT_COORDS = {
 }
 
 FIRST_NAMES = ["Ravi", "Suresh", "Lakshmi", "Ganesh", "Meena", "Anand", "Kavya", "Deepak", "Shalini", "Manjunath"]
+BUYER_NAMES = [
+    "Sri Lakshmi Traders", "Green Valley Retail", "Kaveri Fresh Mart", "Nandi Wholesale",
+    "Bangalore Fresh Foods", "Kolar Veggie Hub", "Mysuru Farm Basket", "Tumkur Agro Mart",
+    "Annapurna Retailers", "Vasavi Fresh Produce",
+]
+
+
+def _demo_phone() -> str:
+    """A clearly synthetic demo contact number (not a real, reachable number)."""
+    return "90000-" + "".join(str(random.randint(0, 9)) for _ in range(5))
 
 
 def _jitter(lat, lon, km_radius=15):
@@ -40,6 +50,7 @@ def generate_listings(n=40, seed=None) -> list:
             quantity_kg=round(random.uniform(50, 1000), 1),
             lat=lat,
             lon=lon,
+            phone_number=_demo_phone(),
         ))
     return listings
 
@@ -62,6 +73,8 @@ def generate_buyer_demands(n=25, seed=None) -> list:
             lat=lat,
             lon=lon,
             reliability_score=round(random.uniform(0.6, 1.0), 2),
+            phone_number=_demo_phone(),
+            buyer_name=random.choice(BUYER_NAMES),
         ))
     return demands
 

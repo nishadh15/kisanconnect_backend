@@ -26,6 +26,7 @@ class Listing:
     lat: float
     lon: float
     asking_price_per_kg: Optional[float] = None
+    phone_number: Optional[str] = None
 
 
 @dataclass
@@ -39,6 +40,8 @@ class BuyerDemand:
     lat: float
     lon: float
     reliability_score: float  # 0.0 - 1.0, derived from trade history
+    phone_number: Optional[str] = None
+    buyer_name: Optional[str] = None
 
 
 def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:

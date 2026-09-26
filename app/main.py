@@ -10,13 +10,14 @@ GET /listings/{listing_id}/matches to see ranked, transparency-scored matches.
 """
 
 import uuid
+from datetime import datetime, timezone
 from typing import List
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from app.matching_engine import Listing, BuyerDemand, rank_matches_for_listing, batch_optimal_assignment
+from app.matching_engine import Listing, BuyerDemand, rank_matches_for_listing, batch_optimal_assignment, compute_utility
 from app.synthetic_data import generate_listings, generate_buyer_demands, farmer_name
 from app.transparency_meter import compute_transparency_savings
 from app.fairness_scoring import score_quote
@@ -34,6 +35,9 @@ app.add_middleware(
 LISTINGS_DB = {}
 DEMANDS_DB = {}
 FARMER_NAMES = {}
+FARMER_PHONES = {}
+LISTING_STATUS = {}   # listing_id -> "ACTIVE" | "MATCHED"
+TRADES_DB = {}        # trade_id -> trade record, newest last
 
 
 class ListingCreateRequest(BaseModel):
@@ -44,6 +48,7 @@ class ListingCreateRequest(BaseModel):
     longitude: float
     farmer_name: str = "Farmer"
     asking_price_per_kg: float | None = None
+    phone_number: str | None = None
 
 
 class DemandCreateRequest(BaseModel):
@@ -55,6 +60,13 @@ class DemandCreateRequest(BaseModel):
     latitude: float
     longitude: float
     reliability_score: float = 0.8
+    phone_number: str | None = None
+    buyer_name: str | None = None
+
+
+class TradeConfirmRequest(BaseModel):
+    listing_id: str
+    buyer_id: str
 
 
 @app.get("/health")
@@ -68,10 +80,14 @@ def seed_demo(n_listings: int = 40, n_demands: int = 25, seed: int = 42):
     LISTINGS_DB.clear()
     DEMANDS_DB.clear()
     FARMER_NAMES.clear()
+    FARMER_PHONES.clear()
+    LISTING_STATUS.clear()
 
     for listing in generate_listings(n_listings, seed=seed):
         LISTINGS_DB[listing.id] = listing
         FARMER_NAMES[listing.id] = farmer_name()
+        FARMER_PHONES[listing.id] = listing.phone_number
+        LISTING_STATUS[listing.id] = "ACTIVE"
 
     for demand in generate_buyer_demands(n_demands, seed=seed):
         DEMANDS_DB[demand.id] = demand
@@ -82,7 +98,8 @@ def seed_demo(n_listings: int = 40, n_demands: int = 25, seed: int = 42):
 @app.get("/listings")
 def list_listings():
     return [
-        {**vars(listing), "farmer_name": FARMER_NAMES.get(listing.id, "Farmer")}
+        {**vars(listing), "farmer_name": FARMER_NAMES.get(listing.id, "Farmer"),
+         "status": LISTING_STATUS.get(listing.id, "ACTIVE")}
         for listing in LISTINGS_DB.values()
     ]
 
@@ -103,9 +120,12 @@ def create_listing(payload: ListingCreateRequest):
         lat=payload.latitude,
         lon=payload.longitude,
         asking_price_per_kg=payload.asking_price_per_kg,
+        phone_number=payload.phone_number,
     )
     LISTINGS_DB[listing_id] = listing
     FARMER_NAMES[listing_id] = payload.farmer_name
+    FARMER_PHONES[listing_id] = payload.phone_number
+    LISTING_STATUS[listing_id] = "ACTIVE"
     return {"listing_id": listing_id, "status": "ACTIVE"}
 
 
@@ -123,8 +143,11 @@ def create_listings_bulk(payloads: List[ListingCreateRequest]):
             lat=payload.latitude,
             lon=payload.longitude,
             asking_price_per_kg=payload.asking_price_per_kg,
+            phone_number=payload.phone_number,
         )
         FARMER_NAMES[listing_id] = payload.farmer_name
+        FARMER_PHONES[listing_id] = payload.phone_number
+        LISTING_STATUS[listing_id] = "ACTIVE"
         created.append({"listing_id": listing_id, "commodity": payload.commodity})
     return {"created": created}
 
@@ -142,6 +165,8 @@ def create_demand(payload: DemandCreateRequest):
         lat=payload.latitude,
         lon=payload.longitude,
         reliability_score=payload.reliability_score,
+        phone_number=payload.phone_number,
+        buyer_name=payload.buyer_name,
     )
     return {"demand_id": demand_id, "status": "OPEN"}
 
@@ -183,3 +208,59 @@ def get_batch_assignment():
         "total_system_utility": round(total_utility, 2),
         "assignments": assignments,
     }
+
+
+@app.post("/trades/confirm")
+def confirm_trade(payload: TradeConfirmRequest):
+    """
+    The real contact-exchange step: once a farmer picks a match, this confirms
+    the trade and returns each side's contact details so they can actually reach
+    each other — this is the step that was missing before (matching alone never
+    connected two real parties).
+    """
+    listing = LISTINGS_DB.get(payload.listing_id)
+    if not listing:
+        raise HTTPException(status_code=404, detail="Listing not found")
+    buyer = DEMANDS_DB.get(payload.buyer_id)
+    if not buyer:
+        raise HTTPException(status_code=404, detail="Buyer demand not found")
+
+    result = compute_utility(listing, buyer)
+    if result is None:
+        # Buyer no longer feasible for this listing (radius/grade/quantity changed since match was shown)
+        raise HTTPException(status_code=409, detail="This buyer is no longer a feasible match for this listing")
+
+    trade_id = str(uuid.uuid4())[:8]
+    trade = {
+        "trade_id": trade_id,
+        "listing_id": listing.id,
+        "buyer_id": buyer.id,
+        "commodity": listing.commodity,
+        "grade": listing.grade,
+        "quantity_kg": listing.quantity_kg,
+        "net_price_per_kg": result["net_price_per_kg"],
+        "logistics_cost_per_kg": result["logistics_cost_per_kg"],
+        "distance_km": result["distance_km"],
+        "farmer_name": FARMER_NAMES.get(listing.id, "Farmer"),
+        "farmer_phone": FARMER_PHONES.get(listing.id) or listing.phone_number or "Not provided",
+        "buyer_name": buyer.buyer_name or "Buyer",
+        "buyer_phone": buyer.phone_number or "Not provided",
+        "status": "CONFIRMED",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    TRADES_DB[trade_id] = trade
+    LISTING_STATUS[listing.id] = "MATCHED"
+    return trade
+
+
+@app.get("/trades")
+def list_trades():
+    return list(reversed(list(TRADES_DB.values())))
+
+
+@app.get("/trades/{trade_id}")
+def get_trade(trade_id: str):
+    trade = TRADES_DB.get(trade_id)
+    if not trade:
+        raise HTTPException(status_code=404, detail="Trade not found")
+    return trade
